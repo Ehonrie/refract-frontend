@@ -29,6 +29,7 @@ type SubmissionState =
   | { status: "idle" }
   | { status: "submitting" }
   | { status: "signing" }
+  | { status: "pending-confirmation"; kind: "deposit" | "withdraw"; amount: number; sharesEstimate: string }
   | { status: "success"; kind: "deposit"; result: ProvideCapitalResponse; demo: boolean; txHash?: string }
   | { status: "success"; kind: "withdraw"; result: WithdrawCapitalResponse; demo: boolean; txHash?: string }
   | { status: "error"; message: string };
@@ -115,7 +116,19 @@ export default function ProvidePage() {
         if (!wallet.networkPassphrase) {
           throw new Error("Wallet network isn't available — reconnect and try again");
         }
-        const txHash = await signAndSubmit(result.txXdr, wallet.address, wallet.networkPassphrase);
+        const txHash = await signAndSubmit(
+          result.txXdr,
+          wallet.address,
+          wallet.networkPassphrase,
+          () => {
+            setSubmission({
+              status: "pending-confirmation",
+              kind: "deposit",
+              amount: parsed,
+              sharesEstimate: (parsed / sharePrice).toFixed(4),
+            });
+          }
+        );
         setSubmission({ status: "success", kind: "deposit", result, demo: false, txHash });
       } else {
         const result = await withdrawCapital(wallet.address, toStroops(parsed / sharePrice));
@@ -123,7 +136,19 @@ export default function ProvidePage() {
         if (!wallet.networkPassphrase) {
           throw new Error("Wallet network isn't available — reconnect and try again");
         }
-        const txHash = await signAndSubmit(result.txXdr, wallet.address, wallet.networkPassphrase);
+        const txHash = await signAndSubmit(
+          result.txXdr,
+          wallet.address,
+          wallet.networkPassphrase,
+          () => {
+            setSubmission({
+              status: "pending-confirmation",
+              kind: "withdraw",
+              amount: parsed,
+              sharesEstimate: (parsed / sharePrice).toFixed(4),
+            });
+          }
+        );
         setSubmission({ status: "success", kind: "withdraw", result, demo: false, txHash });
       }
     } catch (err) {
@@ -268,7 +293,31 @@ export default function ProvidePage() {
 
             {/* Right: Deposit/withdraw form */}
             <div className="lg:sticky lg:top-20">
-              {submission.status === "success" ? (
+              {submission.status === "pending-confirmation" ? (
+                <Card padding="md" role="status" aria-live="polite" className="border-pm-violet/30 bg-pm-violet/[0.04]">
+                  <div className="mb-4 flex items-center gap-2.5 text-pm-violet">
+                    <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-pm-violet border-t-transparent" aria-hidden="true" />
+                    <span className="font-display text-base font-bold">
+                      {submission.kind === "deposit" ? "Capital provided (confirming…)" : "Withdrawal submitted (confirming…)"}
+                    </span>
+                  </div>
+                  <p className="mb-4 rounded-md border border-pm-violet/20 bg-pm-violet/[0.06] px-3 py-2 text-[11px] leading-relaxed text-pm-violet">
+                    Signed transaction submitted to Soroban RPC. Confirming on-chain block inclusion…
+                  </p>
+                  <dl className="flex flex-col gap-2 text-[13px]">
+                    <div className="flex justify-between">
+                      <dt className="text-pm-text/45">{submission.kind === "deposit" ? "Estimated Shares" : "USDC to Receive"}</dt>
+                      <dd className="text-pm-text font-semibold">
+                        {submission.kind === "deposit" ? `${submission.sharesEstimate} PPS` : formatUsd(submission.amount)}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt className="text-pm-text/45">Status</dt>
+                      <dd className="text-pm-violet font-semibold animate-pulse">Awaiting on-chain confirmation…</dd>
+                    </div>
+                  </dl>
+                </Card>
+              ) : submission.status === "success" ? (
                 <Card padding="md" role="status" aria-live="polite">
                   <div className="mb-4 flex items-center gap-2.5 text-pm-green">
                     <span className="text-xl" aria-hidden="true">✓</span>
