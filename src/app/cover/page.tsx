@@ -1,6 +1,8 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { Navbar, Footer } from "@/components/layout";
 import { Container, Card, Badge, Input, Button, Skeleton } from "@/components/ui";
 import { WalletButton } from "@/components/wallet";
@@ -12,6 +14,7 @@ import { ApiUnreachableError } from "@/lib/api/client";
 import { formatUsd, toStroops } from "@/lib/format";
 import { truncateAddress } from "@/lib/wallet/WalletProvider";
 import { signAndSubmit } from "@/lib/wallet/signAndSubmit";
+import { calculatePremium, getEffectiveMaxCoverage, getEffectiveMinCoverage } from "@/lib/premium";
 
 const RISK_TAG_COLORS: Record<string, string> = {
   low: "#10b981",
@@ -24,7 +27,8 @@ const RISK_HEAT: Record<string, number> = { low: 20, medium: 45, high: 72, criti
 
 const QUICK_AMOUNTS = [1_000, 5_000, 10_000, 25_000];
 
-export default function CoverPage() {
+function CoverPageContent() {
+  const searchParams = useSearchParams();
   const wallet = useWallet();
   const { data: coverageTypes, loading: typesLoading, error: typesError, isFixture } = useCoverageTypes();
   const { minCoverage: chainMinCoverage, maxCoverage: chainMaxCoverage } = useCoverageBounds();
@@ -37,18 +41,33 @@ export default function CoverPage() {
     | { status: "idle" }
     | { status: "submitting" }
     | { status: "signing" }
+    | { status: "pending-confirmation"; result: BuyPolicyResponse }
     | { status: "success"; result: BuyPolicyResponse; demo: boolean; txHash?: string }
     | { status: "error"; message: string }
   >({ status: "idle" });
   const radioRefs = useRef<Record<number, HTMLButtonElement | null>>({});
 
+  useEffect(() => {
+    const typeParam = searchParams.get("type");
+    const amountParam = searchParams.get("amount");
+    const durationParam = searchParams.get("duration");
+
+    if (typeParam !== null && !isNaN(Number(typeParam))) {
+      setSelectedType(Number(typeParam));
+    }
+    if (amountParam && !isNaN(Number(amountParam))) {
+      setCoverageAmount(amountParam);
+    }
+    if (durationParam && !isNaN(Number(durationParam))) {
+      setDurationDays(Number(durationParam));
+    }
+  }, [searchParams]);
+
   const ct = coverageTypes?.[selectedType];
 
   const premium = useMemo(() => {
     if (!ct) return 0;
-    const amount = parseFloat(coverageAmount) || 0;
-    const annualRate = ct.baseRatePct / 100;
-    return amount * annualRate * (durationDays / 365);
+    return calculatePremium(coverageAmount, ct.baseRatePct, durationDays);
   }, [coverageAmount, durationDays, ct]);
 
   const expiryDate = new Date(Date.now() + durationDays * 86400000).toLocaleDateString("en-US", {
@@ -62,8 +81,8 @@ export default function CoverPage() {
   // PolicyService.onChainCoverageBounds' doc comment in the backend) —
   // clamp against both so this can't approve an amount the pool would
   // actually reject.
-  const effectiveMin = Math.max(100, chainMinCoverage ?? 0);
-  const effectiveMax = ct ? Math.min(ct.maxCoverage, chainMaxCoverage ?? ct.maxCoverage) : 0;
+  const effectiveMin = getEffectiveMinCoverage(chainMinCoverage);
+  const effectiveMax = ct ? getEffectiveMaxCoverage(ct.maxCoverage, chainMaxCoverage) : 0;
   const amountInvalid = ct
     ? parseFloat(coverageAmount || "0") < effectiveMin || parseFloat(coverageAmount) > effectiveMax
     : false;
@@ -92,7 +111,14 @@ export default function CoverPage() {
       if (!wallet.networkPassphrase) {
         throw new Error("Wallet network isn't available — reconnect and try again");
       }
-      const txHash = await signAndSubmit(result.txXdr, wallet.address, wallet.networkPassphrase);
+      const txHash = await signAndSubmit(
+        result.txXdr,
+        wallet.address,
+        wallet.networkPassphrase,
+        () => {
+          setSubmission({ status: "pending-confirmation", result });
+        }
+      );
       setSubmission({ status: "success", result, demo: false, txHash });
     } catch (err) {
       if (err instanceof ApiUnreachableError) {
@@ -131,18 +157,28 @@ export default function CoverPage() {
 
       <main id="main-content">
         <Container className="py-9 sm:py-10">
-          <div className="mb-8">
-            <h1 className="mb-2 font-display text-[26px] font-extrabold tracking-tight text-pm-text sm:text-[28px]">
-              Get Coverage
-            </h1>
-            <p className="text-sm text-pm-text/45">
-              Choose your coverage type, set amount and duration. Premium paid once. Payout automatic.
-            </p>
-            {isFixture && (
-              <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-pm-amber">
-                ⚠ Showing fixture data — the Refract API isn&apos;t reachable from this environment.
+          <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h1 className="mb-2 font-display text-[26px] font-extrabold tracking-tight text-pm-text sm:text-[28px]">
+                Get Coverage
+              </h1>
+              <p className="text-sm text-pm-text/45">
+                Choose your coverage type, set amount and duration. Premium paid once. Payout automatic.
               </p>
-            )}
+              {isFixture && (
+                <p className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-pm-amber">
+                  ⚠ Showing fixture data — the Refract API isn&apos;t reachable from this environment.
+                </p>
+              )}
+            </div>
+
+            <div>
+              <Link href="/cover/compare">
+                <Button variant="outline" size="sm">
+                  Compare Plans Side-by-Side →
+                </Button>
+              </Link>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[1fr_360px]">
@@ -324,6 +360,30 @@ export default function CoverPage() {
                 <Card padding="md">
                   <Skeleton height={220} rounded="md" />
                 </Card>
+              ) : submission.status === "pending-confirmation" ? (
+                <Card padding="md" role="status" aria-live="polite" className="border-pm-violet/30 bg-pm-violet/[0.04]">
+                  <div className="mb-4 flex items-center gap-2.5 text-pm-violet">
+                    <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-pm-violet border-t-transparent" aria-hidden="true" />
+                    <span className="font-display text-base font-bold">Coverage purchased (confirming…)</span>
+                  </div>
+                  <p className="mb-4 rounded-md border border-pm-violet/20 bg-pm-violet/[0.06] px-3 py-2 text-[11px] leading-relaxed text-pm-violet">
+                    Signed transaction submitted to Soroban RPC. Confirming on-chain block inclusion…
+                  </p>
+                  <dl className="flex flex-col gap-2 text-[13px]">
+                    <div className="flex justify-between">
+                      <dt className="text-pm-text/45">Coverage</dt>
+                      <dd className="text-pm-text font-semibold">{submission.result.policy.coverageTypeName}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt className="text-pm-text/45">Holder</dt>
+                      <dd className="font-mono text-pm-text">{truncateAddress(submission.result.policy.holder)}</dd>
+                    </div>
+                    <div className="flex justify-between">
+                      <dt className="text-pm-text/45">Status</dt>
+                      <dd className="text-pm-violet font-semibold animate-pulse">Awaiting on-chain confirmation…</dd>
+                    </div>
+                  </dl>
+                </Card>
               ) : submission.status === "success" ? (
                 <Card padding="md" role="status" aria-live="polite">
                   <div className="mb-4 flex items-center gap-2.5 text-pm-green">
@@ -462,3 +522,12 @@ export default function CoverPage() {
     </div>
   );
 }
+
+export default function CoverPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-pm-bg" />}>
+      <CoverPageContent />
+    </Suspense>
+  );
+}
+
