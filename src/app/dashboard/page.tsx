@@ -6,8 +6,10 @@ import { WalletButton } from "@/components/wallet";
 import { useWallet } from "@/lib/wallet/WalletProvider";
 import { useHolderPolicies } from "@/hooks/useHolderPolicies";
 import { useClaims } from "@/hooks/useClaims";
+import { usePoolStats } from "@/hooks/usePoolStats";
 import { formatUsd, fromStroops } from "@/lib/format";
 import { stellarExpertTxUrl } from "@/lib/stellar";
+import { aggregateExposure, getPoolRiskAssessment } from "@/lib/portfolioRisk";
 import type { Policy } from "@/lib/api/policies";
 import type { ClaimRecord } from "@/lib/api/claims";
 
@@ -32,6 +34,7 @@ export default function DashboardPage() {
   const wallet = useWallet();
   const address = wallet.status === "connected" ? wallet.address : null;
   const { data: policies, loading, error, isFixture } = useHolderPolicies(address);
+  const { data: poolStats } = usePoolStats();
   const claims = useClaims(address, policies);
 
   const summary = policies
@@ -42,6 +45,9 @@ export default function DashboardPage() {
         totalPayouts: claims.filter((c) => c.triggered).reduce((sum, c) => sum + fromStroops(c.payout), 0),
       }
     : null;
+
+  const riskSummary = policies ? aggregateExposure(policies) : null;
+  const poolRisk = poolStats ? getPoolRiskAssessment(poolStats.utilizationBps) : null;
 
   return (
     <div className="min-h-screen bg-pm-bg">
@@ -109,6 +115,131 @@ export default function DashboardPage() {
                       </Card>
                     ))}
               </div>
+
+              {/* Portfolio Risk Visualization */}
+              {!loading && riskSummary && riskSummary.breakdowns.length > 0 && (
+                <section aria-labelledby="portfolio-risk-heading" className="mb-8">
+                  <div className="mb-4 flex items-center justify-between">
+                    <h2 id="portfolio-risk-heading" className="font-display text-lg font-bold tracking-tight text-pm-text">
+                      Portfolio Risk &amp; Exposure
+                    </h2>
+                    {riskSummary.concentrationRisk === "high" && (
+                      <Badge tone="risk">High Concentration</Badge>
+                    )}
+                    {riskSummary.concentrationRisk === "medium" && (
+                      <Badge tone="violet">Balanced Exposure</Badge>
+                    )}
+                    {riskSummary.concentrationRisk === "low" && (
+                      <Badge tone="safe">Diversified</Badge>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1.4fr_1fr]">
+                    {/* Category Breakdown Bar & Details */}
+                    <Card padding="md">
+                      <div className="mb-3 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-pm-text">Exposure Distribution</span>
+                        <span className="text-xs text-pm-text/45">
+                          {formatUsd(riskSummary.totalExposure)} Total
+                        </span>
+                      </div>
+
+                      {/* Multi-segment proportional bar */}
+                      <div className="mb-5 flex h-3.5 w-full overflow-hidden rounded-full bg-white/[0.04] p-0.5 border border-white/[0.06]">
+                        {riskSummary.breakdowns.map((seg) => (
+                          <div
+                            key={seg.coverageType}
+                            style={{
+                              width: `${seg.percentageOfTotal}%`,
+                              backgroundColor: seg.color,
+                            }}
+                            className="h-full first:rounded-l-full last:rounded-r-full transition-all duration-500"
+                            title={`${seg.coverageTypeName}: ${seg.percentageOfTotal}% (${formatUsd(seg.totalAmount)})`}
+                          />
+                        ))}
+                      </div>
+
+                      {/* List of categories */}
+                      <div className="flex flex-col gap-2.5">
+                        {riskSummary.breakdowns.map((seg) => (
+                          <div
+                            key={seg.coverageType}
+                            className="flex items-center justify-between rounded-lg border border-white/[0.03] bg-white/[0.015] px-3 py-2 text-xs"
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <span
+                                className="flex h-6 w-6 items-center justify-center rounded-md text-xs"
+                                style={{ background: `${seg.color}20` }}
+                                aria-hidden="true"
+                              >
+                                {seg.icon}
+                              </span>
+                              <div>
+                                <span className="font-semibold text-pm-text">{seg.coverageTypeName}</span>
+                                <span className="ml-2 text-[10px] text-pm-text/40">
+                                  ({seg.policyCount} {seg.policyCount === 1 ? "policy" : "policies"})
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <span className="font-medium text-pm-text">{formatUsd(seg.totalAmount)}</span>
+                              <span
+                                className="w-12 text-right font-bold text-xs"
+                                style={{ color: seg.color }}
+                              >
+                                {seg.percentageOfTotal}%
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+
+                    {/* Risk Scenario & Pool Capacity Cross-reference */}
+                    <div className="flex flex-col gap-4">
+                      {/* Projected Trigger Payout Scenario */}
+                      {riskSummary.maxSingleCategory && (
+                        <Card padding="md" className="border-pm-violet/20 bg-pm-violet/[0.04]">
+                          <div className="mb-2 text-[11px] uppercase tracking-wide text-pm-text/40">
+                            Trigger Scenario Simulation
+                          </div>
+                          <div className="mb-2 text-sm font-semibold text-pm-text">
+                            If <span className="text-pm-violet">{riskSummary.maxSingleCategory.coverageTypeName}</span> fires today:
+                          </div>
+                          <div className="font-display text-2xl font-extrabold text-pm-green">
+                            {formatUsd(riskSummary.maxSingleCategory.totalAmount)} USDC
+                          </div>
+                          <p className="mt-1 text-[11px] text-pm-text/40">
+                            Automatic oracle settlement within ~5 seconds directly to your wallet.
+                          </p>
+                        </Card>
+                      )}
+
+                      {/* Pool Utilization Banner */}
+                      {poolRisk && (
+                        <Card padding="md" className="border-white/[0.06]">
+                          <div className="mb-2 flex items-center justify-between">
+                            <span className="text-[11px] uppercase tracking-wide text-pm-text/40">
+                              Underwriting Pool Status
+                            </span>
+                            <span className="text-xs font-bold text-pm-violet">
+                              {poolRisk.utilizationPct.toFixed(1)}% Utilized
+                            </span>
+                          </div>
+                          <div className="mb-2 h-1.5 w-full overflow-hidden rounded-full bg-white/[0.06]">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-pm-green via-pm-violet to-pm-amber"
+                              style={{ width: `${Math.min(100, poolRisk.utilizationPct)}%` }}
+                            />
+                          </div>
+                          <div className="text-xs font-semibold text-pm-text mb-0.5">{poolRisk.title}</div>
+                          <p className="text-[11px] leading-relaxed text-pm-text/45">{poolRisk.message}</p>
+                        </Card>
+                      )}
+                    </div>
+                  </div>
+                </section>
+              )}
 
               {/* Policies */}
               <section aria-labelledby="policies-heading" className="mb-8">
