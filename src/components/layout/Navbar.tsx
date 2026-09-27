@@ -72,7 +72,20 @@ export function Navbar({ right }: NavbarProps) {
           </div>
         </div>
 
-        <div className="hidden items-center gap-3 md:flex">{right}</div>
+        <div className="hidden items-center gap-3 md:flex">
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent("refract:open-command-palette"))}
+            className="flex items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-xs text-pm-text/55 transition-all hover:border-pm-violet/30 hover:bg-pm-violet/[0.05] hover:text-pm-text"
+            aria-label="Search and quick commands (Cmd+K)"
+          >
+            <span>Search</span>
+            <kbd className="rounded border border-white/[0.1] bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-mono text-pm-text/40">
+              ⌘K
+            </kbd>
+          </button>
+          {right}
+        </div>
 
         <button
           ref={menuButtonRef}
